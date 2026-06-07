@@ -22,8 +22,8 @@ MONGO_URI = os.environ.get("MONGO_URI")
 DB_NAME = "telegram_tracker"
 
 # चैनलों की आईडी और अन्य सेटिंग्स (आप चाहें तो इन्हें भी env में डाल सकते हैं)
-MONITOR_CHANNEL = -1003758252316  
-TARGET_CHANNELS = [-10011111111, -10022222222, -10033333333]  
+MONITOR_CHANNEL = -1003758252316  # जिस मुख्य चैनल पर आप पोस्ट डालते हैं
+TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]  # वे 3 चैनल जहाँ बॉट पोस्ट शेयर करेगा
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
 
