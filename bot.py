@@ -2,8 +2,8 @@ import os
 import asyncio
 import dns.resolver
 from flask import Flask, request, jsonify
-from pyrogram import Client, filters
-from pyrogram.types import Message, Update
+from pyrogram import Client
+from pyrogram.types import Message, Chat
 from pymongo import MongoClient
 
 # --- एंड्रॉइड फिक्स ---
@@ -27,7 +27,7 @@ TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
 
-# ⚠️ अपनी असली टेलीग्राम न्यूमेरिकल आईडी यहाँ डालें (जैसे: 543216789)
+# ⚠️ अपनी असली टेलीग्राम आईडी यहाँ डालें
 ADMIN_ID = 7559016251  
 
 # मोंगोडीबी सेटअप
@@ -35,7 +35,7 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 posts_collection = db["posts"]
 
-# टेलीग्राम क्लाइंट सेटअप
+# टेलीग्राम क्लाइंट सेटअप (Vercel के लिए वर्कर्स 1 और इन-मेमोरी)
 app_tg = Client(
     "channel_tracker", 
     api_id=API_ID, 
@@ -120,23 +120,44 @@ async def process_telegram_message(message: Message):
             except Exception:
                 pass
 
-# Vercel के लिए नया और सुरक्षित वेबहुक हैंडलर (Already Connected एरर का फिक्स)
+# Vercel के लिए नया वेबहुक (बिना 'json_to_update' के डिक्शनरी पार्सिंग विधि)
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get("content-type") == "application/json":
-        json_string = request.get_data().decode("utf-8")
+        data = request.get_json()
         
         async def handle():
-            # अगर क्लाइंट कनेक्टेड नहीं है, तभी कनेक्ट करें
+            # कनेक्शन सुनिश्चित करें
             if not app_tg.is_connected:
                 await app_tg.connect()
-                
-            update = await app_tg.json_to_update(json_string)
             
-            if isinstance(update, Update) and update.message:
-                await process_telegram_message(update.message)
-            elif isinstance(update, Update) and update.channel_post:
-                await process_telegram_message(update.channel_post)
+            # 1. सामान्य मैसेज पार्स करना (जैसे /start)
+            if "message" in data:
+                msg_data = data["message"]
+                msg = Message(
+                    id=msg_data.get("message_id"),
+                    client=app_tg,
+                    text=msg_data.get("text"),
+                    caption=msg_data.get("caption"),
+                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None,
+                    video=True if "video" in msg_data else None,
+                    photo=True if "photo" in msg_data else None
+                )
+                await process_telegram_message(msg)
+                
+            # 2. चैनल पोस्ट पार्स करना
+            elif "channel_post" in data:
+                msg_data = data["channel_post"]
+                msg = Message(
+                    id=msg_data.get("message_id"),
+                    client=app_tg,
+                    text=msg_data.get("text"),
+                    caption=msg_data.get("caption"),
+                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None,
+                    video=True if "video" in msg_data else None,
+                    photo=True if "photo" in msg_data else None
+                )
+                await process_telegram_message(msg)
                     
         asyncio.run(handle())
         return "OK", 200
