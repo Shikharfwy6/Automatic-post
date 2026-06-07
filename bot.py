@@ -6,7 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, Update
 from pymongo import MongoClient
 
-# --- एंड्रॉइड फिक्स (सुरक्षा के लिए कोड में रखा गया है) ---
+# --- एंड्रॉइड फिक्स ---
 try:
     dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
     dns.resolver.default_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
@@ -21,9 +21,10 @@ MONGO_URI = os.environ.get("MONGO_URI")
 
 DB_NAME = "telegram_tracker"
 
-# चैनलों की आईडी और अन्य सेटिंग्स (आप चाहें तो इन्हें भी env में डाल सकते हैं)
-MONITOR_CHANNEL = -1003758252316  # जिस मुख्य चैनल पर आप पोस्ट डालते हैं
-TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]  # वे 3 चैनल जहाँ बॉट पोस्ट शेयर करेगा
+# --- यहाँ आपकी नई चैनल IDs सेट कर दी गई हैं ---
+MONITOR_CHANNEL = -1003758252316  # मुख्य चैनल
+TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]  # आपके 3 नए चैनल
+
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
 
@@ -32,17 +33,22 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 posts_collection = db["posts"]
 
-# टेलीग्राम क्लाइंट सेटअप (बिना वर्कर शुरू किए क्योंकि हम वेबहुक पर हैं)
-app_tg = Client("channel_tracker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=0)
+# टेलीग्राम क्लाइंट सेटअप (Vercel फ्रेंडली सेटिंग्स)
+app_tg = Client(
+    "channel_tracker", 
+    api_id=API_ID, 
+    api_hash=API_HASH, 
+    bot_token=BOT_TOKEN, 
+    workers=1, 
+    in_memory=True
+)
 
 # Flask ऐप सेटअप
 app = Flask(__name__)
 
 # टेलीग्राम मैसेज प्रोसेसिंग का मुख्य फंक्शन
 async def process_telegram_message(message: Message):
-    # जाँच करें कि यह सही चैनल है और इसमें फोटो या वीडियो है
     if message.chat and message.chat.id == MONITOR_CHANNEL and (message.video or message.photo):
-        # अगर कैप्शन नहीं है, तो अनदेखा करें
         if not message.caption:
             return
 
@@ -89,13 +95,12 @@ async def process_telegram_message(message: Message):
             "caption": current_caption
         })
 
-# Vercel के लिए वेबहुक एंडपॉइंट (Webhook Endpoint)
+# Vercel के लिए वेबहुक एंडपॉइंट
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         
-        # पायरोथॉन अपडेट को पार्स और प्रोसेस करना
         async def handle():
             async with app_tg:
                 update = await app_tg.json_to_update(json_string)
@@ -109,4 +114,3 @@ def webhook():
 @app.route("/", methods=["GET"])
 def index():
     return "बॉट वेबहुक सक्रिय है!", 200
-      
