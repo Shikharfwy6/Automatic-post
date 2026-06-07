@@ -21,19 +21,21 @@ MONGO_URI = os.environ.get("MONGO_URI")
 
 DB_NAME = "telegram_tracker"
 
-# --- यहाँ आपकी नई चैनल IDs सेट कर दी गई हैं ---
-MONITOR_CHANNEL = -1003758252316  # मुख्य चैनल
-TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]  # आपके 3 नए चैनल
-
+# --- चैनल और सेटिंग्स ---
+MONITOR_CHANNEL = -1003758252316  
+TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]  
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
+
+# ⚠️ यहाँ अपनी खुद की टेलीग्राम यूजर आईडी (उदा: 543216789) डालें ताकि बॉट आपको लॉग्स भेज सके
+ADMIN_ID = 7559016251  # अपनी असली टेलीग्राम आईडी से बदलें
 
 # मोंगोडीबी सेटअप
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 posts_collection = db["posts"]
 
-# टेलीग्राम क्लाइंट सेटअप (Vercel फ्रेंडली सेटिंग्स)
+# टेलीग्राम क्लाइंट सेटअप
 app_tg = Client(
     "channel_tracker", 
     api_id=API_ID, 
@@ -48,6 +50,15 @@ app = Flask(__name__)
 
 # टेलीग्राम मैसेज प्रोसेसिंग का मुख्य फंक्शन
 async def process_telegram_message(message: Message):
+    # 1. पर्सनल चैट में /start कमांड का जवाब देना
+    if message.text and message.text.startswith("/start"):
+        try:
+            await message.reply_text("✅ बॉट पूरी तरह सक्रिय है और आपके चैनल की निगरानी कर रहा है!")
+        except Exception as e:
+            print(f"Error sending start reply: {e}")
+        return
+
+    # 2. चैनल पोस्ट की निगरानी करना
     if message.chat and message.chat.id == MONITOR_CHANNEL and (message.video or message.photo):
         if not message.caption:
             return
@@ -89,13 +100,24 @@ async def process_telegram_message(message: Message):
                     except Exception as e:
                         print(f"Error copying to {channel_id}: {e}")
 
-        # नई पोस्ट डेटाबेस में सेव करें
-        posts_collection.insert_one({
-            "post_id": current_post_id,
-            "caption": current_caption
-        })
+        # नई पोस्ट डेटाबेस में सेव करें और आपको सूचित करें
+        try:
+            posts_collection.insert_one({
+                "post_id": current_post_id,
+                "caption": current_caption
+            })
+            # आपको पर्सनल चैट में नोटिफिकेशन भेजना
+            await app_tg.send_message(
+                chat_id=ADMIN_ID, 
+                text=f"📥 **मोंगोडीबी अपडेट:**\nनई पोस्ट आईडी `{current_post_id}` सफलतापूर्वक मोंगोडीबी डेटाबेस में सुरक्षित कर दी गई है!"
+            )
+        except Exception as e:
+            await app_tg.send_message(
+                chat_id=ADMIN_ID, 
+                text=f"❌ **मोंगोडीबी त्रुटि:**\nपोस्ट आईडी `{current_post_id}` सेव करने में विफल। एरर: {str(e)}"
+            )
 
-# Vercel के लिए वेबहुक एंडपॉइंट
+# Vercel के लिए वेबहुक एंडपॉइंट (Pyrogram अपडेट्स को पार्स करने के लिए सुधारा गया तरीका)
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get("content-type") == "application/json":
@@ -103,9 +125,15 @@ def webhook():
         
         async def handle():
             async with app_tg:
+                # वेबहुक डेटा को पार्स करना
                 update = await app_tg.json_to_update(json_string)
+                
+                # यदि सीधा मैसेज है (जैसे /start या चैनल की नई पोस्ट)
                 if isinstance(update, Update) and update.message:
                     await process_telegram_message(update.message)
+                # यदि यह चैनल पोस्ट का दूसरा प्रकार है (Channel Post)
+                elif isinstance(update, Update) and update.channel_post:
+                    await process_telegram_message(update.channel_post)
                     
         asyncio.run(handle())
         return "OK", 200
