@@ -27,8 +27,8 @@ TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
 
-# ⚠️ यहाँ अपनी खुद की टेलीग्राम यूजर आईडी (उदा: 543216789) डालें ताकि बॉट आपको लॉग्स भेज सके
-ADMIN_ID = 7559016251  # अपनी असली टेलीग्राम आईडी से बदलें
+# ⚠️ अपनी असली टेलीग्राम न्यूमेरिकल आईडी यहाँ डालें (जैसे: 543216789)
+ADMIN_ID = 7559016251  
 
 # मोंगोडीबी सेटअप
 mongo_client = MongoClient(MONGO_URI)
@@ -106,34 +106,37 @@ async def process_telegram_message(message: Message):
                 "post_id": current_post_id,
                 "caption": current_caption
             })
-            # आपको पर्सनल चैट में नोटिफिकेशन भेजना
+            # एडमिन को पर्सनल नोटिफिकेशन भेजना
             await app_tg.send_message(
                 chat_id=ADMIN_ID, 
-                text=f"📥 **मोंगोडीबी अपडेट:**\nनई पोस्ट आईडी `{current_post_id}` सफलतापूर्वक मोंगोडीबी डेटाबेस में सुरक्षित कर दी गई है!"
+                text=f"📥 **मोंगोडीबी अपडेट:**\nनई पोस्ट आईडी `{current_post_id}` सफलतापूर्वक डेटाबेस में सुरक्षित हो गई है!"
             )
         except Exception as e:
-            await app_tg.send_message(
-                chat_id=ADMIN_ID, 
-                text=f"❌ **मोंगोडीबी त्रुटि:**\nपोस्ट आईडी `{current_post_id}` सेव करने में विफल। एरर: {str(e)}"
-            )
+            try:
+                await app_tg.send_message(
+                    chat_id=ADMIN_ID, 
+                    text=f"❌ **मोंगोडीबी त्रुटि:**\nपोस्ट आईडी `{current_post_id}` सेव करने में विफल। एरर: {str(e)}"
+                )
+            except Exception:
+                pass
 
-# Vercel के लिए वेबहुक एंडपॉइंट (Pyrogram अपडेट्स को पार्स करने के लिए सुधारा गया तरीका)
+# Vercel के लिए नया और सुरक्षित वेबहुक हैंडलर (Already Connected एरर का फिक्स)
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         
         async def handle():
-            async with app_tg:
-                # वेबहुक डेटा को पार्स करना
-                update = await app_tg.json_to_update(json_string)
+            # अगर क्लाइंट कनेक्टेड नहीं है, तभी कनेक्ट करें
+            if not app_tg.is_connected:
+                await app_tg.connect()
                 
-                # यदि सीधा मैसेज है (जैसे /start या चैनल की नई पोस्ट)
-                if isinstance(update, Update) and update.message:
-                    await process_telegram_message(update.message)
-                # यदि यह चैनल पोस्ट का दूसरा प्रकार है (Channel Post)
-                elif isinstance(update, Update) and update.channel_post:
-                    await process_telegram_message(update.channel_post)
+            update = await app_tg.json_to_update(json_string)
+            
+            if isinstance(update, Update) and update.message:
+                await process_telegram_message(update.message)
+            elif isinstance(update, Update) and update.channel_post:
+                await process_telegram_message(update.channel_post)
                     
         asyncio.run(handle())
         return "OK", 200
