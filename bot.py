@@ -27,7 +27,7 @@ TARGET_CHANNELS = [-1003925609024, -1003628942216, -1003835409098]
 TARGET_BOT_USER = "Getvideo81827_bot"
 COMPULSORY_NUMBER = "2"
 
-# ⚠️ अपनी असली टेलीग्राम आईडी यहाँ डालें
+# ⚠️ यहाँ अपनी असली टेलीग्राम न्यूमेरिकल आईडी डालें (जैसे: 543216789)
 ADMIN_ID = 7559016251  
 
 # मोंगोडीबी सेटअप
@@ -35,7 +35,7 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 posts_collection = db["posts"]
 
-# टेलीग्राम क्लाइंट सेटअप (Vercel के लिए वर्कर्स 1 और इन-मेमोरी)
+# टेलीग्राम क्लाइंट सेटअप
 app_tg = Client(
     "channel_tracker", 
     api_id=API_ID, 
@@ -49,17 +49,18 @@ app_tg = Client(
 app = Flask(__name__)
 
 # टेलीग्राम मैसेज प्रोसेसिंग का मुख्य फंक्शन
-async def process_telegram_message(message: Message):
-    # 1. पर्सनल चैट में /start कमांड का जवाब देना
-    if message.text and message.text.startswith("/start"):
+async def process_telegram_message(message: Message, is_channel=False):
+    # 1. पर्सनल चैट में /start कमांड का जवाब देना (केवल सामान्य मैसेज के लिए)
+    if not is_channel and message.text and message.text.startswith("/start"):
         try:
-            await message.reply_text("✅ बॉट पूरी तरह सक्रिय है और आपके चैनल की निगरानी कर रहा है!")
+            await app_tg.send_message(chat_id=message.chat.id, text="✅ बॉट पूरी तरह सक्रिय है और आपके चैनल की निगरानी कर रहा है!")
         except Exception as e:
             print(f"Error sending start reply: {e}")
         return
 
     # 2. चैनल पोस्ट की निगरानी करना
-    if message.chat and message.chat.id == MONITOR_CHANNEL and (message.video or message.photo):
+    if is_channel and message.chat and message.chat.id == MONITOR_CHANNEL:
+        # अगर कैप्शन नहीं है, तो सीधे छोड़ दें
         if not message.caption:
             return
 
@@ -97,8 +98,19 @@ async def process_telegram_message(message: Message):
                             message_id=prev_post_id,
                             caption=updated_caption
                         )
+                        # सफलता का लॉग एडमिन को भेजना
+                        await app_tg.send_message(
+                            chat_id=ADMIN_ID,
+                            text=f"📢 **चैनल अपडेट:**\nपोस्ट आईडी `{prev_post_id}` को नए कैप्शन के साथ सफलतापूर्वक चैनल `{channel_id}` में कॉपी कर दिया गया है!"
+                        )
                     except Exception as e:
-                        print(f"Error copying to {channel_id}: {e}")
+                        try:
+                            await app_tg.send_message(
+                                chat_id=ADMIN_ID,
+                                text=f"❌ **कॉपी त्रुटि ({channel_id}):** {str(e)}"
+                            )
+                        except Exception:
+                            pass
 
         # नई पोस्ट डेटाबेस में सेव करें और आपको सूचित करें
         try:
@@ -120,44 +132,39 @@ async def process_telegram_message(message: Message):
             except Exception:
                 pass
 
-# Vercel के लिए नया वेबहुक (बिना 'json_to_update' के डिक्शनरी पार्सिंग विधि)
+# Vercel के लिए वेबहुक एंडपॉइंट
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get("content-type") == "application/json":
         data = request.get_json()
         
         async def handle():
-            # कनेक्शन सुनिश्चित करें
             if not app_tg.is_connected:
                 await app_tg.connect()
             
-            # 1. सामान्य मैसेज पार्स करना (जैसे /start)
+            # 1. सामान्य मैसेज (जैसे /start)
             if "message" in data:
                 msg_data = data["message"]
                 msg = Message(
                     id=msg_data.get("message_id"),
                     client=app_tg,
                     text=msg_data.get("text"),
-                    caption=msg_data.get("caption"),
-                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None,
-                    video=True if "video" in msg_data else None,
-                    photo=True if "photo" in msg_data else None
+                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None
                 )
-                await process_telegram_message(msg)
+                await process_telegram_message(msg, is_channel=False)
                 
-            # 2. चैनल पोस्ट पार्स करना
+            # 2. चैनल पोस्ट (मुख्य चैनल की पोस्ट और वीडियोस)
             elif "channel_post" in data:
                 msg_data = data["channel_post"]
-                msg = Message(
-                    id=msg_data.get("message_id"),
-                    client=app_tg,
-                    text=msg_data.get("text"),
-                    caption=msg_data.get("caption"),
-                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None,
-                    video=True if "video" in msg_data else None,
-                    photo=True if "photo" in msg_data else None
-                )
-                await process_telegram_message(msg)
+                # सिर्फ वीडियो या फोटो होने पर ही प्रोसेस करें
+                if "video" in msg_data or "photo" in msg_data:
+                    msg = Message(
+                        id=msg_data.get("message_id"),
+                        client=app_tg,
+                        caption=msg_data.get("caption"),
+                        chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None
+                    )
+                    await process_telegram_message(msg, is_channel=True)
                     
         asyncio.run(handle())
         return "OK", 200
