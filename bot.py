@@ -1,9 +1,7 @@
 import os
-import asyncio
 import dns.resolver
+import requests
 from flask import Flask, request, jsonify
-from pyrogram import Client
-from pyrogram.types import Message, Chat
 from pymongo import MongoClient
 
 # --- एंड्रॉइड फिक्स ---
@@ -14,11 +12,8 @@ except Exception:
     pass
 
 # --- पर्यावरण वेरिएबल्स (Environment Variables) ---
-API_ID = int(os.environ.get("API_ID", 1234567))
-API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-
 DB_NAME = "telegram_tracker"
 
 # --- चैनल और सेटिंग्स ---
@@ -35,102 +30,97 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 posts_collection = db["posts"]
 
-# टेलीग्राम क्लाइंट सेटअप
-app_tg = Client(
-    "channel_tracker", 
-    api_id=API_ID, 
-    api_hash=API_HASH, 
-    bot_token=BOT_TOKEN, 
-    workers=1, 
-    in_memory=True
-)
-
 # Flask ऐप सेटअप
 app = Flask(__name__)
 
-# टेलीग्राम मैसेज प्रोसेसिंग का मुख्य फंक्शन
-async def process_telegram_message(message: Message, is_channel=False):
-    # 1. पर्सनल चैट में /start कमांड का जवाब देना (केवल सामान्य मैसेज के लिए)
-    if not is_channel and message.text and message.text.startswith("/start"):
-        try:
-            await app_tg.send_message(chat_id=message.chat.id, text="✅ बॉट पूरी तरह सक्रिय है और आपके चैनल की निगरानी कर रहा है!")
-        except Exception as e:
-            print(f"Error sending start reply: {e}")
-        return
+# टेलीग्राम API को सीधे रिक्वेस्ट भेजने के लिए फंक्शन्स
+def send_tg_message(chat_id, text, parse_mode="Markdown"):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": False}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Error sending message: {e}")
 
-    # 2. चैनल पोस्ट की निगरानी करना
-    if is_channel and message.chat and message.chat.id == MONITOR_CHANNEL:
-        # अगर कैप्शन नहीं है, तो सीधे छोड़ दें
-        if not message.caption:
+def copy_tg_message(chat_id, from_chat_id, message_id, caption):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+    payload = {
+        "chat_id": chat_id,
+        "from_chat_id": from_chat_id,
+        "message_id": message_id,
+        "caption": caption,
+        "parse_mode": "Markdown"
+    }
+    try:
+        res = requests.post(url, json=payload).json()
+        return res.get("ok", False)
+    except Exception as e:
+        print(f"Error copying message: {e}")
+        return False
+
+# टेलीग्राम मैसेज प्रोसेसिंग का मुख्य फंक्शन
+def process_telegram_message(msg_data, is_channel=False):
+    # 1. पर्सनल चैट में /start कमांड का जवाब देना
+    if not is_channel:
+        chat_id = msg_data.get("chat", {}).get("id")
+        text = msg_data.get("text", "")
+        if text.startswith("/start"):
+            send_tg_message(chat_id, "✅ बॉट पूरी तरह सक्रिय है और आपके चैनल की निगरानी कर रहा है!")
             return
 
-        current_post_id = message.id
-        current_caption = message.caption
+    # 2. चैनल पोस्ट की निगरानी करना
+    if is_channel:
+        chat_id = msg_data.get("chat", {}).get("id")
+        
+        # केवल तभी काम करें जब यह सही मॉनिटर चैनल हो
+        if chat_id == MONITOR_CHANNEL:
+            # अगर कैप्शन नहीं है, तो सीधे छोड़ दें (वीडियो/क्लिप्स को इग्नोर करें)
+            if "caption" not in msg_data or not msg_data.get("caption"):
+                return
 
-        # डेटाबेस से सबसे आखिरी पोस्ट खोजें
-        last_post = posts_collection.find_one(sort=[("post_id", -1)])
+            current_post_id = msg_data.get("message_id")
+            current_caption = msg_data.get("caption")
 
-        if last_post:
-            prev_post_id = last_post["post_id"]
-            prev_caption = last_post["caption"]
+            # डेटाबेस से सबसे आखिरी पोस्ट खोजें
+            last_post = posts_collection.find_one(sort=[("post_id", -1)])
 
-            start_video_id = prev_post_id + 1
-            end_video_id = current_post_id - 1
+            if last_post:
+                prev_post_id = last_post["post_id"]
+                prev_caption = last_post["caption"]
 
-            if start_video_id <= end_video_id:
-                if start_video_id == end_video_id:
-                    bot_url = f"https://t.me/{TARGET_BOT_USER}?start={start_video_id}_{COMPULSORY_NUMBER}"
-                else:
-                    bot_url = f"https://t.me/{TARGET_BOT_USER}?start={start_video_id}_{end_video_id}_{COMPULSORY_NUMBER}"
+                start_video_id = prev_post_id + 1
+                end_video_id = current_post_id - 1
 
-                updated_caption = (
-                    f"Best video\n"
-                    f"{prev_caption}\n"
-                    f"[Click here to watch]({bot_url})"
-                )
+                if start_video_id <= end_video_id:
+                    if start_video_id == end_video_id:
+                        bot_url = f"https://t.me/{TARGET_BOT_USER}?start={start_video_id}_{COMPULSORY_NUMBER}"
+                    else:
+                        bot_url = f"https://t.me/{TARGET_BOT_USER}?start={start_video_id}_{end_video_id}_{COMPULSORY_NUMBER}"
 
-                # चैनलों में पोस्ट कॉपी करें
-                for channel_id in TARGET_CHANNELS:
-                    try:
-                        await app_tg.copy_message(
-                            chat_id=channel_id,
-                            from_chat_id=MONITOR_CHANNEL,
-                            message_id=prev_post_id,
-                            caption=updated_caption
-                        )
-                        # सफलता का लॉग एडमिन को भेजना
-                        await app_tg.send_message(
-                            chat_id=ADMIN_ID,
-                            text=f"📢 **चैनल अपडेट:**\nपोस्ट आईडी `{prev_post_id}` को नए कैप्शन के साथ सफलतापूर्वक चैनल `{channel_id}` में कॉपी कर दिया गया है!"
-                        )
-                    except Exception as e:
-                        try:
-                            await app_tg.send_message(
-                                chat_id=ADMIN_ID,
-                                text=f"❌ **कॉपी त्रुटि ({channel_id}):** {str(e)}"
-                            )
-                        except Exception:
-                            pass
+                    # यहाँ टेलीग्राम के नियमों के अनुसार [Text](Link) फॉर्मेट का उपयोग किया गया है
+                    updated_caption = (
+                        f"Best video\n"
+                        f"{prev_caption}\n"
+                        f"[Click here to watch]({bot_url})"
+                    )
 
-        # नई पोस्ट डेटाबेस में सेव करें और आपको सूचित करें
-        try:
-            posts_collection.insert_one({
-                "post_id": current_post_id,
-                "caption": current_caption
-            })
-            # एडमिन को पर्सनल नोटिफिकेशन भेजना
-            await app_tg.send_message(
-                chat_id=ADMIN_ID, 
-                text=f"📥 **मोंगोडीबी अपडेट:**\nनई पोस्ट आईडी `{current_post_id}` सफलतापूर्वक डेटाबेस में सुरक्षित हो गई है!"
-            )
-        except Exception as e:
+                    # तीनों चैनलों में पुरानी पोस्ट कॉपी करें
+                    for channel_id in TARGET_CHANNELS:
+                        success = copy_tg_message(channel_id, MONITOR_CHANNEL, prev_post_id, updated_caption)
+                        if success:
+                            send_tg_message(ADMIN_ID, f"📢 **चैनल अपडेट:**\nपोस्ट आईडी `{prev_post_id}` सफलतापूर्वक चैनल `{channel_id}` में कॉपी कर दी गई है!")
+                        else:
+                            send_tg_message(ADMIN_ID, f"❌ **कॉपी त्रुटि:** चैनल `{channel_id}` में पोस्ट आईडी `{prev_post_id}` भेजने में विफलता। कृपया चेक करें कि बॉट वहां एडमिन है या नहीं।")
+
+            # नई पोस्ट डेटाबेस में सेव करें और एडमिन को सूचित करें
             try:
-                await app_tg.send_message(
-                    chat_id=ADMIN_ID, 
-                    text=f"❌ **मोंगोडीबी त्रुटि:**\nपोस्ट आईडी `{current_post_id}` सेव करने में विफल। एरर: {str(e)}"
-                )
-            except Exception:
-                pass
+                posts_collection.insert_one({
+                    "post_id": current_post_id,
+                    "caption": current_caption
+                })
+                send_tg_message(ADMIN_ID, f"📥 **मोंगोडीबी अपडेट:**\nनई पोस्ट आईडी `{current_post_id}` सफलतापूर्वक डेटाबेस में सुरक्षित हो गई है!")
+            except Exception as e:
+                send_tg_message(ADMIN_ID, f"❌ **मोंगोडीबी त्रुटि:**\nपोस्ट आईडी `{current_post_id}` सेव करने में विफल। एरर: {str(e)}")
 
 # Vercel के लिए वेबहुक एंडपॉइंट
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
@@ -138,35 +128,17 @@ def webhook():
     if request.headers.get("content-type") == "application/json":
         data = request.get_json()
         
-        async def handle():
-            if not app_tg.is_connected:
-                await app_tg.connect()
+        # 1. सामान्य मैसेज (जैसे /start)
+        if "message" in data:
+            process_telegram_message(data["message"], is_channel=False)
             
-            # 1. सामान्य मैसेज (जैसे /start)
-            if "message" in data:
-                msg_data = data["message"]
-                msg = Message(
-                    id=msg_data.get("message_id"),
-                    client=app_tg,
-                    text=msg_data.get("text"),
-                    chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None
-                )
-                await process_telegram_message(msg, is_channel=False)
+        # 2. चैनल पोस्ट (मुख्य चैनल की पोस्ट और वीडियोस)
+        elif "channel_post" in data:
+            msg_data = data["channel_post"]
+            # सिर्फ वीडियो या फोटो होने पर ही आगे बढ़ें
+            if "video" in msg_data or "photo" in msg_data:
+                process_telegram_message(msg_data, is_channel=True)
                 
-            # 2. चैनल पोस्ट (मुख्य चैनल की पोस्ट और वीडियोस)
-            elif "channel_post" in data:
-                msg_data = data["channel_post"]
-                # सिर्फ वीडियो या फोटो होने पर ही प्रोसेस करें
-                if "video" in msg_data or "photo" in msg_data:
-                    msg = Message(
-                        id=msg_data.get("message_id"),
-                        client=app_tg,
-                        caption=msg_data.get("caption"),
-                        chat=Chat(id=msg_data["chat"]["id"], type=msg_data["chat"]["type"], client=app_tg) if "chat" in msg_data else None
-                    )
-                    await process_telegram_message(msg, is_channel=True)
-                    
-        asyncio.run(handle())
         return "OK", 200
     return "Forbidden", 403
 
